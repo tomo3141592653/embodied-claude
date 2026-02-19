@@ -136,6 +136,13 @@ class TTSMCP:
                                 ),
                                 "enum": ["camera", "local", "both"],
                             },
+                            "listen_after": {
+                                "type": "number",
+                                "description": (
+                                    "Seconds to listen for a response after speaking (via camera mic). "
+                                    "If set, records audio and transcribes it. Good for conversations."
+                                ),
+                            },
                         },
                         "required": ["text"],
                     },
@@ -243,12 +250,35 @@ class TTSMCP:
                     )
                     camera_status = cam_msg
 
+                # Listen after speaking (for conversations)
+                listen_status = ""
+                listen_after = arguments.get("listen_after")
+                if listen_after and listen_after > 0:
+                    rtsp_url = pb.rtsp_url
+                    if rtsp_url:
+                        try:
+                            listen_duration = min(float(listen_after), 30.0)
+                            audio_file, transcript = await playback.listen_from_rtsp(
+                                rtsp_url, listen_duration, pb.save_dir,
+                            )
+                            listen_status = (
+                                f"\n\n--- Response heard ---\n"
+                                f"Listened: {listen_duration}s\n"
+                                f"Audio: {audio_file}\n"
+                                f"Transcript: {transcript or '(silence or not transcribed)'}"
+                            )
+                        except Exception as listen_exc:
+                            listen_status = f"\nListen failed: {listen_exc}"
+                    else:
+                        listen_status = "\nListen skipped: no camera configured"
+
                 message = (
                     f"Spoken via {engine_name}\n"
                     f"File: {file_path}\n"
                     f"Speaker: {speaker_target}\n"
                     f"Playback: {play_status}\n"
                     f"Camera: {camera_status}"
+                    f"{listen_status}"
                 )
                 return [TextContent(type="text", text=message)]
             except Exception as exc:  # noqa: BLE001

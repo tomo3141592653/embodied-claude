@@ -10,7 +10,8 @@ dependencies = [
 
 [project.optional-dependencies]
 elevenlabs = ["elevenlabs>=1.0.0"]
-all = ["elevenlabs>=1.0.0"]
+transcribe = ["openai-whisper>=20231117"]
+all = ["elevenlabs>=1.0.0", "openai-whisper>=20231117"]
 dev = [
     "elevenlabs>=1.0.0",
     "pytest>=8.0.0",

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -12,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 from urllib.parse import quote
+
+logger = logging.getLogger(__name__)
 
 
 def save_audio(audio_bytes: bytes, audio_format: str, save_dir: str) -> str:
@@ -299,3 +303,64 @@ def play_with_go2rtc(
         return True, f"played via go2rtc → {go2rtc_stream}"
     except Exception as exc:
         return False, f"go2rtc failed: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Listen via RTSP (record + transcribe)
+# ---------------------------------------------------------------------------
+
+async def listen_from_rtsp(
+    rtsp_url: str,
+    duration: float = 5.0,
+    save_dir: str = "/tmp/tts-mcp",
+) -> tuple[str, str | None]:
+    """Record audio from RTSP stream and transcribe with Whisper.
+
+    Returns (audio_file_path, transcript_or_none).
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    file_path = os.path.join(save_dir, f"listen_{timestamp}.wav")
+
+    cmd = [
+        "ffmpeg",
+        "-rtsp_transport", "tcp",
+        "-i", rtsp_url,
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        "-ac", "1",
+        "-t", str(duration),
+        "-y",
+        file_path,
+    ]
+
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await asyncio.wait_for(process.wait(), timeout=duration + 10.0)
+
+    if not os.path.exists(file_path):
+        raise RuntimeError("Failed to record audio from RTSP")
+
+    transcript = await _transcribe_audio(file_path)
+    return file_path, transcript
+
+
+async def _transcribe_audio(audio_path: str) -> str | None:
+    """Transcribe audio file using OpenAI Whisper."""
+    try:
+        import whisper
+    except ImportError:
+        logger.warning("Whisper not installed. Run: uv sync --extra transcribe")
+        return None
+
+    try:
+        model = await asyncio.to_thread(whisper.load_model, "base")
+        result = await asyncio.to_thread(model.transcribe, audio_path, language="ja")
+        return result.get("text", "").strip() or None
+    except Exception as exc:
+        logger.warning("Transcription failed: %s", exc)
+        return None

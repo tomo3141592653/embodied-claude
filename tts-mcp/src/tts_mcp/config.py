@@ -85,6 +85,16 @@ class PlaybackConfig:
     go2rtc_camera_username: str | None
     go2rtc_camera_password: str | None
 
+    @property
+    def rtsp_url(self) -> str | None:
+        """Build RTSP URL for listening from camera microphone."""
+        if not self.go2rtc_camera_host:
+            return None
+        user = self.go2rtc_camera_username or ""
+        pwd = self.go2rtc_camera_password or ""
+        auth = f"{user}:{pwd}@" if user or pwd else ""
+        return f"rtsp://{auth}{self.go2rtc_camera_host}:554/stream1"
+
     @classmethod
     def from_env(cls) -> "PlaybackConfig":
         """Create config from environment variables."""
