@@ -45,8 +45,9 @@ PASSWORD = os.getenv("TAPO_PASSWORD", "")
 INBOX = os.getenv("AYUMU_INBOX", "/tmp/ayumu_inbox")
 COOLDOWN = int(os.getenv("EVENT_COOLDOWN", "30"))
 
-# Track last event times to avoid spam
-_last_events: dict[str, float] = {}
+# Track state for edge detection (only notify on changes)
+_current_state: dict[str, bool] = {}
+_last_change_time: dict[str, float] = {}
 
 
 def _wsse_header(user: str, password: str) -> str:
@@ -125,22 +126,38 @@ def _parse_events(xml_body: str) -> list[dict[str, str]]:
     return events
 
 
-def _write_inbox(event_type: str, details: str) -> None:
-    """Write event to ayumu_inbox with cooldown."""
-    now = datetime.now().timestamp()
-    last = _last_events.get(event_type, 0)
-    if now - last < COOLDOWN:
-        logger.debug("Cooldown: skipping %s (%.0fs left)", event_type, COOLDOWN - (now - last))
+def _on_state_change(event_type: str, is_active: bool) -> None:
+    """Write to inbox only on state transitions (edge detection)."""
+    prev = _current_state.get(event_type)
+    _current_state[event_type] = is_active
+
+    # Only notify on change (None→True counts as change)
+    if prev == is_active:
         return
 
-    _last_events[event_type] = now
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"PERSON_DETECT: {timestamp} {details}\n"
+    # Cooldown: ignore rapid toggling
+    now = datetime.now().timestamp()
+    last = _last_change_time.get(event_type, 0)
+    if now - last < COOLDOWN:
+        logger.debug("Cooldown: skipping %s state change", event_type)
+        return
+    _last_change_time[event_type] = now
 
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if event_type == "person":
+        detail = "人物を検知しました（誰か来た）" if is_active else "人物がいなくなりました"
+    elif event_type == "pet":
+        detail = "ペットを検知しました" if is_active else "ペットがいなくなりました"
+    elif event_type == "tamper":
+        detail = "カメラへのタンパーを検知" if is_active else "タンパー解除"
+    else:
+        detail = f"{event_type} {'ON' if is_active else 'OFF'}"
+
+    line = f"SENSOR: {timestamp} {detail}\n"
     with open(INBOX, "a") as f:
         f.write(line)
 
-    logger.info("Wrote to inbox: %s", line.strip())
+    logger.info("State change → inbox: %s", line.strip())
 
 
 async def _create_subscription(cam: ONVIFCamera) -> str:
@@ -176,21 +193,23 @@ async def _listen_loop(sub_addr: str) -> None:
                     topic = event.get("topic", "")
                     logger.debug("Event: %s %s", topic, event)
 
-                    # Person detection
-                    if "IsPeople" in event and event["IsPeople"].lower() == "true":
-                        _write_inbox("person", "人物を検知しました")
+                    # Person detection (edge: notify on appear/disappear)
+                    if "IsPeople" in event:
+                        _on_state_change("person", event["IsPeople"].lower() == "true")
 
-                    # Motion detection (logged but not written to inbox)
-                    if "IsMotion" in event and event["IsMotion"].lower() == "true":
-                        logger.info("Motion detected")
+                    # Motion detection (logged only, too noisy for inbox)
+                    if "IsMotion" in event:
+                        is_motion = event["IsMotion"].lower() == "true"
+                        if is_motion:
+                            logger.debug("Motion detected")
 
                     # Pet detection
-                    if "IsPet" in event and event.get("IsPet", "").lower() == "true":
-                        _write_inbox("pet", "ペットを検知しました")
+                    if "IsPet" in event:
+                        _on_state_change("pet", event["IsPet"].lower() == "true")
 
                     # Tamper detection
-                    if "IsTamper" in event and event.get("IsTamper", "").lower() == "true":
-                        _write_inbox("tamper", "カメラへのタンパーを検知しました")
+                    if "IsTamper" in event:
+                        _on_state_change("tamper", event["IsTamper"].lower() == "true")
 
             except httpx.TimeoutException:
                 continue  # Normal timeout, just retry
